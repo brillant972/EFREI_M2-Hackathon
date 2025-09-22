@@ -1,3 +1,5 @@
+Problematique: "Comment predire les innondations en Ile de France?"
+
 Objectifs globaux
 - Produire un score de risque d’inondation (ou une probabilité) à horizons J+1 et J+3 pour des sous-bassins / tronçons ciblés d’Île-de-France.
 - Générer une alerte binaire (faible / moyen / élevé) et une prévision de niveau/débit.
