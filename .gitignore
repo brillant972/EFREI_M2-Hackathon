@@ -7,6 +7,8 @@ build/
 dist/
 .env
 .venv
+pgdata/
+initdb/
 
 # Jupyter notebooks checkpoints
 .ipynb_checkpoints/
