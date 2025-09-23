@@ -1,4 +1,5 @@
-Parquet colonnes:
+Nom et significations des colonnes:
+
 NUM_POSTE → Station identifier (numeric code).
 NOM_USUEL → Usual station name.
 LAT → Latitude of the station.
