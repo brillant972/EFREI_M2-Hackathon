@@ -1,3 +1,8 @@
+#!/usr/bin/env python3
+# bronze.py - Couche Bronze : Ingestion des données brutes
+# Hackathon EFREI - Ville Durable et Intelligente
+# Équipe : Prédiction Inondations Île-de-France
+
 import os
 import re
 import sys
@@ -5,19 +10,20 @@ import requests
 import pandas as pd
 from urllib.parse import urljoin, urlparse
 from requests.adapters import HTTPAdapter, Retry
+from pathlib import Path
 
 # === Paramètres ===
 DATASET_ID = "6569b51ae64326786e4e8e1a"
 DATASET_API = f"https://www.data.gouv.fr/api/1/datasets/{DATASET_ID}/"
 HOST = "https://www.data.gouv.fr"
-OUT_DIR = "bronze"
+OUT_DIR = Path("data/bronze/meteo")
 
-# Cibles demandées
+# Filtres
 ALLOWED_PERIODS = {"1950-2023", "2024-2025"}
 ALLOWED_BLOCS = {"RR-T-Vent", "autres-parametres"}
+ALLOWED_DEPTS = {"75","77","78","91","92","93","94","95"}  # Île-de-France
 
-# === Dossier de sortie ===
-os.makedirs(OUT_DIR, exist_ok=True)
+OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 # === Session HTTP robuste ===
 session = requests.Session()
@@ -58,29 +64,22 @@ def pick_best_hint(res: dict) -> str:
     )
 
 def get_dataset_json():
-    log(f"📥 Fetch dataset: {DATASET_API}")
+    log(f"Fetch dataset: {DATASET_API}")
     r = session.get(DATASET_API, timeout=30)
     r.raise_for_status()
     return r.json()
 
 def final_filename_and_url(url: str, hint: str) -> tuple[str, str]:
-    """Suit les redirections et récupère le nom final sans télécharger le contenu."""
     url = absolute_url(url)
+    h = session.head(url, allow_redirects=True, timeout=30)
+    if 200 <= h.status_code < 300:
+        cd = h.headers.get("Content-Disposition", "")
+        name = filename_from_content_disposition(cd)
+        if not name:
+            path = urlparse(h.url).path
+            name = os.path.basename(path) or hint
+        return name, h.url
 
-    # HEAD d'abord
-    try:
-        h = session.head(url, allow_redirects=True, timeout=30)
-        if 200 <= h.status_code < 300:
-            cd = h.headers.get("Content-Disposition", "")
-            name = filename_from_content_disposition(cd)
-            if not name:
-                path = urlparse(h.url).path
-                name = os.path.basename(path) or hint
-            return name, h.url
-    except requests.RequestException:
-        pass
-
-    # Fallback GET stream (on ne lit pas le corps)
     g = session.get(url, stream=True, allow_redirects=True, timeout=60)
     g.raise_for_status()
     cd = g.headers.get("Content-Disposition", "")
@@ -91,7 +90,6 @@ def final_filename_and_url(url: str, hint: str) -> tuple[str, str]:
     g.close()
     return name, g.url
 
-# --- Parseur des formats de noms acceptés ---
 def parse_target(name: str):
     """
     Retourne (code_dept, periode, bloc) si le nom correspond à l'un des formats :
@@ -110,12 +108,12 @@ def parse_target(name: str):
     if m:
         return m.group(1), m.group(2), m.group(3)
 
-    # Préfixe QUOTQ_ avec previous/current/latest
+    # Préfixe QUOTQ_
     m = re.match(rf"^QUOTQ_(\d{{2,3}})_(?:previous|current|latest)-{period_re}_{bloc_re}.*\.csv\.gz$", name, re.I)
     if m:
         return m.group(1), m.group(2), m.group(3)
 
-    # Préfixe Q_ avec previous/current/latest (ex: Q_19_previous-1950-2023_autres-parametres.csv.gz)
+    # Préfixe Q_ avec previous/current/latest
     m = re.match(rf"^Q_(\d{{2,3}})_(?:previous|current|latest)-{period_re}_{bloc_re}.*\.csv\.gz$", name, re.I)
     if m:
         return m.group(1), m.group(2), m.group(3)
@@ -127,119 +125,91 @@ def parse_target(name: str):
 
     return None
 
-def is_allowed(periode: str, bloc: str) -> bool:
-    return (periode in ALLOWED_PERIODS) and (bloc in ALLOWED_BLOCS)
 
-def download(url: str, out_path: str):
+def is_allowed(code: str, periode: str, bloc: str) -> bool:
+    return (periode in ALLOWED_PERIODS) and (bloc in ALLOWED_BLOCS) and (code in ALLOWED_DEPTS)
+
+def download(url: str, out_path: Path):
     with session.get(url, stream=True, allow_redirects=True, timeout=180) as r:
         r.raise_for_status()
-        os.makedirs(os.path.dirname(out_path), exist_ok=True)
         with open(out_path, "wb") as f:
             for chunk in r.iter_content(chunk_size=1024 * 1024):
                 if chunk:
                     f.write(chunk)
 
-def csv_gz_to_parquet(csv_gz_path: str) -> str:
-    """Lit un CSV.gz (séparateur ;) et écrit un .parquet à côté. Supprime le CSV.gz si OK."""
-    parquet_path = csv_gz_path.replace(".csv.gz", ".parquet")
-    df = pd.read_csv(csv_gz_path, compression="gzip", sep=";", low_memory=False)
-    df.to_parquet(parquet_path, engine="pyarrow", index=False)
+def csv_gz_to_parquet_dataset(csv_gz_path: str, parquet_dir: Path):
+    """Lit un CSV.gz en streaming et écrit un parquet dataset (dossier de fichiers)"""
+    parquet_dir.mkdir(parents=True, exist_ok=True)
+    chunks = pd.read_csv(csv_gz_path, compression="gzip", sep=";", low_memory=False, chunksize=200000)
+    for i, chunk in enumerate(chunks):
+        out_file = parquet_dir / f"part_{i}.parquet"
+        chunk.to_parquet(out_file, engine="pyarrow", index=False)
     os.remove(csv_gz_path)
-    return parquet_path
+    return parquet_dir
 
 def main():
     try:
         dataset = get_dataset_json()
-    except requests.HTTPError as e:
-        log(f"❌ HTTP error dataset: {e}")
-        sys.exit(1)
     except Exception as e:
-        log(f"❌ Error dataset: {e}")
+        log(f"Error dataset: {e}")
         sys.exit(1)
 
     resources = dataset.get("resources") or []
-    log(f"🔎 {len(resources)} ressources trouvées")
+    log(f"{len(resources)} ressources trouvées")
 
-    downloaded, converted, skipped = 0, 0, 0
+    converted, skipped = 0, 0
 
     for i, res in enumerate(resources, 1):
         url = absolute_url(res.get("url", ""))
         if not url:
-            skipped += 1
-            log(f"[{i}] ⏭️  Pas d'URL, skip")
             continue
 
         hint = pick_best_hint(res)
-        log(f"[{i}] Ressource: hint='{hint}' | url={url}")
-
-        # Nom final après redirections
         try:
             final_name, final_url = final_filename_and_url(url, hint)
-        except requests.HTTPError as e:
-            skipped += 1
-            log(f"    ❌ HEAD/GET metadata error: {e}")
+        except Exception:
             continue
-        except Exception as e:
-            skipped += 1
-            log(f"    ❌ Metadata error: {e}")
-            continue
-
-        log(f"    → Nom final détecté: {final_name}")
 
         info = parse_target(final_name) or parse_target(hint)
         if not info:
+            log(f"Skip {final_name}: ne matche pas parse_target")
             skipped += 1
-            log("    🚫 Ne matche pas les formats quotidiens attendus, skip")
             continue
 
         code, periode, bloc = info
-
-        # Filtrage strict selon la demande (périodes 1950-2023 et 2024-2025 + deux blocs)
-        if not is_allowed(periode, bloc):
+        if not is_allowed(code, periode, bloc):
+            log(f"Skip {final_name}: code={code}, periode={periode}, bloc={bloc}")
             skipped += 1
-            log(f"    🚫 Filtré (periode={periode}, bloc={bloc})")
             continue
 
-        # Nom canonique demandé
-        canonical_csv = f"QUOT_departement_{code}_periode_{periode}_{bloc}.csv.gz"
-        out_csv_path = os.path.join(OUT_DIR, canonical_csv)
+        canonical_csv = f"Q_{code}_{periode}_{bloc}.csv.gz"
+        out_csv_path = OUT_DIR / canonical_csv
+        out_parquet_dir = OUT_DIR / canonical_csv.replace(".csv.gz", "_parquet")
 
-        if os.path.exists(out_csv_path.replace(".csv.gz", ".parquet")):
-            log(f"    ✅ Parquet déjà présent: {os.path.basename(out_csv_path).replace('.csv.gz','.parquet')} (skip)")
+        if out_parquet_dir.exists():
+            log(f"Déjà converti: {out_parquet_dir}")
             continue
 
-        log(f"    ⬇️  Téléchargement → {canonical_csv}")
+        log(f"Téléchargement {canonical_csv} ({periode}, {bloc}, dept {code})")
         try:
             download(final_url, out_csv_path)
+            log(f"Téléchargement OK: {out_csv_path}")
 
-            if os.path.exists(out_csv_path):
-                size_mb = os.path.getsize(out_csv_path) / 1_000_000
-                downloaded += 1
-                log(f"    ✅ OK ({size_mb:.2f} MB)")
-
-                try:
-                    parquet_path = csv_gz_to_parquet(out_csv_path)
-                    converted += 1
-                    log(f"    💾 Converti en Parquet: {parquet_path}")
-                except Exception as e:
-                    log(f"    ❌ Erreur conversion Parquet (CSV conservé): {e}")
-            else:
-                skipped += 1
-                log("    ❌ Téléchargement annoncé mais fichier introuvable")
+            log("Conversion en Parquet dataset...")
+            parquet_path = csv_gz_to_parquet_dataset(out_csv_path, out_parquet_dir)
+            converted += 1
+            log(f"Converti -> {parquet_path}")
 
         except Exception as e:
-            if os.path.exists(out_csv_path):
-                try:
-                    os.remove(out_csv_path)
-                except OSError:
-                    pass
             skipped += 1
-            log(f"    ❌ Erreur téléchargement: {e}")
+            log(f"Erreur: {e}")
+            if out_csv_path.exists():
+                os.remove(out_csv_path)
 
-    log("—" * 60)
-    log(f"📊 Bilan: téléchargés={downloaded}, convertis_parquet={converted}, ignorés={skipped}")
-    log(f"📂 Dossier: ./{OUT_DIR}")
-    log("🎉 Terminé.")
+    log("------------------------------------------------------------")
+    log(f"Bilan: convertis={converted}, ignorés={skipped}")
+    log(f"Dossier: {OUT_DIR}")
+    log("Terminé.")
 
 if __name__ == "__main__":
     main()
