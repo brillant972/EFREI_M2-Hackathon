@@ -20,6 +20,7 @@ initdb/
 # Data lake layers
 bronze/
 silver/
+data/
 
 # Logs
 *.log
