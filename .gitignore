@@ -1,0 +1,30 @@
+# Ignore Python cache / build stuff
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.eggs/
+build/
+dist/
+.env
+.venv
+pgdata/
+initdb/
+
+# Jupyter notebooks checkpoints
+.ipynb_checkpoints/
+
+# IDE/editor configs
+.vscode/
+.idea/
+
+# Data lake layers
+bronze/
+silver/
+data/
+
+# Logs
+*.log
+
+# OS-specific
+.DS_Store
+Thumbs.db
