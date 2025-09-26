@@ -144,36 +144,6 @@ def main_pipeline(df, rr_threshold=50, rr_7d_threshold=150):
     
     return model, X, y, optimal_threshold
 
-def create_sample_data():
-    np.random.seed(42)
-    n_samples = 10000
-    
-    dates = pd.date_range('2018-01-01', periods=n_samples, freq='D')
-    
-    df = pd.DataFrame({
-        'date': dates,
-        'NUM_POSTE': np.random.choice(['12345', '23456', '34567'], n_samples),
-        'RR': np.random.exponential(2, n_samples), 
-        'ALTI': np.random.uniform(0, 1000, n_samples),
-        'TM': 15 + 10 * np.sin(2 * np.pi * np.arange(n_samples) / 365) + np.random.normal(0, 3, n_samples),
-        'PMER': 1013 + np.random.normal(0, 10, n_samples),
-        'FFM': np.random.exponential(3, n_samples),
-        'API': np.random.uniform(0, 100, n_samples),
-    })
-    
-    df = df.sort_values(['NUM_POSTE', 'date'])
-    df['RR_7d'] = df.groupby('NUM_POSTE')['RR'].rolling(7, min_periods=1).sum().values
-    df['RR_14d'] = df.groupby('NUM_POSTE')['RR'].rolling(14, min_periods=1).sum().values
-    df['RR_30d'] = df.groupby('NUM_POSTE')['RR'].rolling(30, min_periods=1).sum().values
-    df['TM_7d'] = df.groupby('NUM_POSTE')['TM'].rolling(7, min_periods=1).mean().values
-    df['TM_30d'] = df.groupby('NUM_POSTE')['TM'].rolling(30, min_periods=1).mean().values
-
-    df['day_of_year'] = df['date'].dt.dayofyear
-    df['sin_doy'] = np.sin(2 * np.pi * df['day_of_year'] / 365)
-    df['cos_doy'] = np.cos(2 * np.pi * df['day_of_year'] / 365)
-    
-    return df
-
 if __name__ == "__main__":
     sample_df = pd.read_parquet("data/silver/time_series/meteo_clean.parquet")
     
